@@ -3,14 +3,14 @@ use shared_structures::SharedRingBuffer;
 use std::env;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
+use std::num::NonZero;
 use std::os::fd::AsRawFd as _;
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::num::NonZero;
 use std::time::Duration;
 
 use libc;
-use xcb::{self, x, Xid};
+use xcb::{self, Xid, x};
 
 use raw_window_handle::{
     DisplayHandle, HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle,
@@ -18,11 +18,11 @@ use raw_window_handle::{
 };
 
 use xbar_core::{
-    arm_second_timer, colors_for_theme, draw_bar, initialize_logging,
+    AppState, BarConfig, Color, SHARED_TOKEN, ShapeStyle, ThemeMode, arm_second_timer,
     cairo::{self, Context, Format, ImageSurface},
+    colors_for_theme, draw_bar, initialize_logging,
     pango::FontDescription,
-    spawn_shared_eventfd_notifier, AppState, BarConfig, Color, ShapeStyle, ThemeMode,
-    SHARED_TOKEN,
+    spawn_shared_eventfd_notifier,
 };
 
 // ============================================================================
@@ -143,7 +143,11 @@ impl Gpu {
 
         let cpu_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("cpu-upload-texture"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -189,7 +193,7 @@ impl Gpu {
             ],
         });
 
-                let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipeline-layout"),
             bind_group_layouts: &[Some(&bind_layout)], // 修复：包装在 Some 中
             immediate_size: 0,                         // 修复：添加 immediate_size
@@ -218,7 +222,7 @@ impl Gpu {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             cache: None,
-             multiview_mask: NonZero::new(0),
+            multiview_mask: NonZero::new(0),
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -253,7 +257,9 @@ impl Gpu {
     }
 
     fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 { return; }
+        if width == 0 || height == 0 {
+            return;
+        }
         self.width = width;
         self.height = height;
         self.config.width = width;
@@ -262,7 +268,11 @@ impl Gpu {
 
         self.cpu_tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("cpu-upload-texture"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -270,7 +280,9 @@ impl Gpu {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        self.cpu_tex_view = self.cpu_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        self.cpu_tex_view = self
+            .cpu_tex
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let bind_layout = self.pipeline.get_bind_group_layout(0);
         self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -289,7 +301,7 @@ impl Gpu {
         });
     }
 
-        fn upload_and_present(&self, cpu_data: &[u8], stride: u32) -> Result<()> {
+    fn upload_and_present(&self, cpu_data: &[u8], stride: u32) -> Result<()> {
         let bpr = stride;
         let aligned_bpr = ((bpr + 255) / 256) * 256;
         let height = self.height;
@@ -301,7 +313,8 @@ impl Gpu {
             padded = vec![0u8; aligned_bpr as usize * height as usize];
             for y in 0..height as usize {
                 let src = &cpu_data[y * bpr as usize..(y + 1) * bpr as usize];
-                let dst = &mut padded[y * aligned_bpr as usize..y * aligned_bpr as usize + bpr as usize];
+                let dst =
+                    &mut padded[y * aligned_bpr as usize..y * aligned_bpr as usize + bpr as usize];
                 dst.copy_from_slice(src);
             }
             &padded
@@ -345,9 +358,13 @@ impl Gpu {
                 anyhow::bail!("wgpu surface validation error")
             }
         };
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -466,19 +483,12 @@ fn redraw(
     }
 
     let surface = unsafe {
-        ImageSurface::create_for_data_unsafe(
-            cpu_frame.as_mut_ptr(),
-            Format::ARgb32,
-            w,
-            h,
-            stride,
-        )?
+        ImageSurface::create_for_data_unsafe(cpu_frame.as_mut_ptr(), Format::ARgb32, w, h, stride)?
     };
     let cr = Context::new(&surface)?;
     cr.set_source_rgba(0.0, 0.0, 0.0, 1.0);
     cr.set_operator(cairo::Operator::Source);
     cr.paint()?;
-    
     draw_bar(&cr, width, height, colors, state, font, cfg)?;
     surface.flush();
 
@@ -530,8 +540,10 @@ fn main() -> Result<()> {
         depth: x::COPY_FROM_PARENT as u8,
         wid: win,
         parent: screen.root(),
-        x: 0, y: 0,
-        width: current_width, height: current_height,
+        x: 0,
+        y: 0,
+        width: current_width,
+        height: current_height,
         border_width: 0,
         class: x::WindowClass::InputOutput,
         visual: screen.root_visual(),
@@ -555,13 +567,19 @@ fn main() -> Result<()> {
         conn: conn.get_raw_conn() as *mut c_void,
         window: win.resource_id(),
     });
-    let mut gpu = pollster::block_on(Gpu::new(target, current_width as u32, current_height as u32))?;
+    let mut gpu = pollster::block_on(Gpu::new(
+        target,
+        current_width as u32,
+        current_height as u32,
+    ))?;
     let mut cpu_frame = Vec::new();
 
     conn.send_and_check_request(&x::MapWindow { window: win })?;
     conn.flush()?;
 
-    let font = FontDescription::from_string(&env::var("XBAR_FONT").unwrap_or_else(|_| "monospace 11".into()));
+    let font = FontDescription::from_string(
+        &env::var("XBAR_FONT").unwrap_or_else(|_| "monospace 11".into()),
+    );
     let mut state = AppState::new(shared_buffer);
     state.theme_mode = ThemeMode::Dark;
     let _ = sync_shared_state(&mut state);
@@ -571,19 +589,42 @@ fn main() -> Result<()> {
     state.last_monitor_update = std::time::Instant::now();
     let mut colors = tuned_colors_for_theme(state.theme_mode);
 
-    redraw(&gpu, &mut cpu_frame, current_width, current_height, &colors, &mut state, &font, &cfg)?;
+    redraw(
+        &gpu,
+        &mut cpu_frame,
+        current_width,
+        current_height,
+        &colors,
+        &mut state,
+        &font,
+        &cfg,
+    )?;
 
     let epfd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
-    let tfd = unsafe { libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_NONBLOCK | libc::TFD_CLOEXEC) };
+    let tfd = unsafe {
+        libc::timerfd_create(
+            libc::CLOCK_MONOTONIC,
+            libc::TFD_NONBLOCK | libc::TFD_CLOEXEC,
+        )
+    };
     arm_second_timer(tfd)?;
 
-    let mut ev_x = libc::epoll_event { events: libc::EPOLLIN as u32, u64: 1 };
+    let mut ev_x = libc::epoll_event {
+        events: libc::EPOLLIN as u32,
+        u64: 1,
+    };
     unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, conn.as_raw_fd(), &mut ev_x) };
-    let mut ev_t = libc::epoll_event { events: libc::EPOLLIN as u32, u64: 2 };
+    let mut ev_t = libc::epoll_event {
+        events: libc::EPOLLIN as u32,
+        u64: 2,
+    };
     unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, tfd, &mut ev_t) };
 
     if let Some(efd) = shared_efd {
-        let mut ev_s = libc::epoll_event { events: libc::EPOLLIN as u32, u64: SHARED_TOKEN };
+        let mut ev_s = libc::epoll_event {
+            events: libc::EPOLLIN as u32,
+            u64: SHARED_TOKEN,
+        };
         unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, efd, &mut ev_s) };
     }
 
@@ -591,15 +632,19 @@ fn main() -> Result<()> {
 
     loop {
         let nfds = unsafe { libc::epoll_wait(epfd, events.as_mut_ptr(), 32, -1) };
-        if nfds < 0 { continue; }
+        if nfds < 0 {
+            continue;
+        }
 
         for i in 0..(nfds as usize) {
             match events[i].u64 {
-                1 => { 
+                1 => {
                     while let Ok(Some(event)) = conn.poll_for_event() {
                         let mut need_redraw = false;
                         match event {
-                            xcb::Event::X(x::Event::Expose(e)) if e.count() == 0 => need_redraw = true,
+                            xcb::Event::X(x::Event::Expose(e)) if e.count() == 0 => {
+                                need_redraw = true
+                            }
                             xcb::Event::X(x::Event::ConfigureNotify(e)) if e.window() == win => {
                                 current_width = e.width() as u16;
                                 current_height = e.height() as u16;
@@ -611,33 +656,63 @@ fn main() -> Result<()> {
                             }
                             xcb::Event::X(x::Event::ButtonPress(e)) => {
                                 let before_theme = state.theme_mode;
-                                if state.handle_buttons(e.event_x(), e.event_y(), e.detail().into()) {
-                                    if state.theme_mode != before_theme { colors = tuned_colors_for_theme(state.theme_mode); }
+                                if state.handle_buttons(e.event_x(), e.event_y(), e.detail().into())
+                                {
+                                    if state.theme_mode != before_theme {
+                                        colors = tuned_colors_for_theme(state.theme_mode);
+                                    }
                                     need_redraw = true;
                                 }
                             }
                             _ => {}
                         }
                         if need_redraw {
-                            let _ = redraw(&gpu, &mut cpu_frame, current_width, current_height, &colors, &mut state, &font, &cfg);
+                            let _ = redraw(
+                                &gpu,
+                                &mut cpu_frame,
+                                current_width,
+                                current_height,
+                                &colors,
+                                &mut state,
+                                &font,
+                                &cfg,
+                            );
                         }
                     }
                 }
-                2 => { 
+                2 => {
                     let mut buf = [0u8; 8];
                     if unsafe { libc::read(tfd, buf.as_mut_ptr() as _, 8) } == 8
                         && refresh_runtime_state(&mut state)
                     {
-                        let _ = redraw(&gpu, &mut cpu_frame, current_width, current_height, &colors, &mut state, &font, &cfg);
+                        let _ = redraw(
+                            &gpu,
+                            &mut cpu_frame,
+                            current_width,
+                            current_height,
+                            &colors,
+                            &mut state,
+                            &font,
+                            &cfg,
+                        );
                     }
                 }
-                SHARED_TOKEN => { 
+                SHARED_TOKEN => {
                     if let Some(efd) = shared_efd {
                         let mut buf = [0u8; 8];
                         if unsafe { libc::read(efd, buf.as_mut_ptr() as _, 8) } == 8
                             && sync_shared_state(&mut state)
                         {
-                            let _ = redraw(&gpu, &mut cpu_frame, current_width, current_height, &colors, &mut state, &font, &cfg);
+                            let _ = redraw(
+                                &gpu,
+                                &mut cpu_frame,
+                                current_width,
+                                current_height,
+                                &colors,
+                                &mut state,
+                                &font,
+                                &cfg,
+                            );
                         }
                     }
                 }
