@@ -392,6 +392,29 @@ fn tuned_colors_for_theme(mode: ThemeMode) -> xbar_core::Colors {
     c
 }
 
+fn intern_atom(conn: &xcb::Connection, name: &'static [u8]) -> Result<x::Atom> {
+    let cookie = conn.send_request(&x::InternAtom {
+        only_if_exists: false,
+        name,
+    });
+    Ok(conn.wait_for_reply(cookie)?.atom())
+}
+
+fn set_net_wm_name(conn: &xcb::Connection, window: x::Window, name: &str) -> Result<()> {
+    let utf8_string = intern_atom(conn, b"UTF8_STRING")?;
+    let net_wm_name = intern_atom(conn, b"_NET_WM_NAME")?;
+
+    conn.send_and_check_request(&x::ChangeProperty {
+        mode: x::PropMode::Replace,
+        window,
+        property: net_wm_name,
+        r#type: utf8_string,
+        data: name.as_bytes(),
+    })?;
+
+    Ok(())
+}
+
 fn redraw(
     gpu: &Gpu,
     cpu_frame: &mut Vec<u8>,
@@ -493,6 +516,8 @@ fn main() -> Result<()> {
             ),
         ],
     })?;
+
+    set_net_wm_name(&conn, win, env!("CARGO_PKG_NAME"))?;
 
     // 绑定 WGPU
     let target = Arc::new(XcbTarget {
