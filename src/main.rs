@@ -1,6 +1,4 @@
 use anyhow::Result;
-use cairo::{Context, Format, ImageSurface};
-use pango::FontDescription;
 use shared_structures::SharedRingBuffer;
 use std::env;
 use std::ffi::c_void;
@@ -20,6 +18,8 @@ use raw_window_handle::{
 
 use xbar_core::{
     arm_second_timer, colors_for_theme, draw_bar, initialize_logging,
+    cairo::{self, Context, Format, ImageSurface},
+    pango::FontDescription,
     spawn_shared_eventfd_notifier, AppState, BarConfig, Color, ShapeStyle, ThemeMode,
 };
 
