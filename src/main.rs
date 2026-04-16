@@ -7,6 +7,7 @@ use std::os::fd::AsRawFd as _;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::num::NonZero;
+use std::time::Duration;
 
 use libc;
 use xcb::{self, x, Xid};
@@ -21,6 +22,7 @@ use xbar_core::{
     cairo::{self, Context, Format, ImageSurface},
     pango::FontDescription,
     spawn_shared_eventfd_notifier, AppState, BarConfig, Color, ShapeStyle, ThemeMode,
+    SHARED_TOKEN,
 };
 
 // ============================================================================
@@ -415,6 +417,35 @@ fn set_net_wm_name(conn: &xcb::Connection, window: x::Window, name: &str) -> Res
     Ok(())
 }
 
+fn refresh_runtime_state(state: &mut AppState) -> bool {
+    let mut changed = false;
+    let new_time = state.format_time();
+    if new_time != state.last_time_string {
+        state.last_time_string = new_time;
+        changed = true;
+    }
+    if state.last_monitor_update.elapsed() >= Duration::from_secs(2) {
+        changed |= state.system_monitor.update_if_needed();
+        changed |= state.audio_manager.update_if_needed();
+        state.last_monitor_update = std::time::Instant::now();
+    }
+    changed
+}
+
+fn sync_shared_state(state: &mut AppState) -> bool {
+    let Some(shared_buffer) = state.shared_buffer.as_ref().cloned() else {
+        return false;
+    };
+
+    match shared_buffer.try_read_latest_message() {
+        Ok(Some(msg)) => {
+            state.update_from_shared(msg);
+            true
+        }
+        Ok(None) | Err(_) => false,
+    }
+}
+
 fn redraw(
     gpu: &Gpu,
     cpu_frame: &mut Vec<u8>,
@@ -533,6 +564,11 @@ fn main() -> Result<()> {
     let font = FontDescription::from_string(&env::var("XBAR_FONT").unwrap_or_else(|_| "monospace 11".into()));
     let mut state = AppState::new(shared_buffer);
     state.theme_mode = ThemeMode::Dark;
+    let _ = sync_shared_state(&mut state);
+    state.last_time_string = state.format_time();
+    let _ = state.system_monitor.update_if_needed();
+    let _ = state.audio_manager.update_if_needed();
+    state.last_monitor_update = std::time::Instant::now();
     let mut colors = tuned_colors_for_theme(state.theme_mode);
 
     redraw(&gpu, &mut cpu_frame, current_width, current_height, &colors, &mut state, &font, &cfg)?;
@@ -547,7 +583,7 @@ fn main() -> Result<()> {
     unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, tfd, &mut ev_t) };
 
     if let Some(efd) = shared_efd {
-        let mut ev_s = libc::epoll_event { events: libc::EPOLLIN as u32, u64: 3 };
+        let mut ev_s = libc::epoll_event { events: libc::EPOLLIN as u32, u64: SHARED_TOKEN };
         unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, efd, &mut ev_s) };
     }
 
@@ -589,14 +625,20 @@ fn main() -> Result<()> {
                 }
                 2 => { 
                     let mut buf = [0u8; 8];
-                    unsafe { libc::read(tfd, buf.as_mut_ptr() as _, 8) };
-                    let _ = redraw(&gpu, &mut cpu_frame, current_width, current_height, &colors, &mut state, &font, &cfg);
+                    if unsafe { libc::read(tfd, buf.as_mut_ptr() as _, 8) } == 8
+                        && refresh_runtime_state(&mut state)
+                    {
+                        let _ = redraw(&gpu, &mut cpu_frame, current_width, current_height, &colors, &mut state, &font, &cfg);
+                    }
                 }
-                3 => { 
+                SHARED_TOKEN => { 
                     if let Some(efd) = shared_efd {
                         let mut buf = [0u8; 8];
-                        unsafe { libc::read(efd, buf.as_mut_ptr() as _, 8) };
-                        let _ = redraw(&gpu, &mut cpu_frame, current_width, current_height, &colors, &mut state, &font, &cfg);
+                        if unsafe { libc::read(efd, buf.as_mut_ptr() as _, 8) } == 8
+                            && sync_shared_state(&mut state)
+                        {
+                            let _ = redraw(&gpu, &mut cpu_frame, current_width, current_height, &colors, &mut state, &font, &cfg);
+                        }
                     }
                 }
                 _ => {}
