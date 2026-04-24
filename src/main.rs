@@ -501,7 +501,7 @@ fn redraw(
 // ============================================================================
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
-    let shared_path = args.get(1).cloned().unwrap_or_default();
+    let shared_path = args.iter().skip(1).last().cloned().unwrap_or_default();
     initialize_logging("xcb_wgpu_bar", &shared_path)?;
 
     let shared_buffer = SharedRingBuffer::create_shared_ring_buffer_aux(&shared_path).map(Arc::new);
